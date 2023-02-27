@@ -1,0 +1,756 @@
+---
+jupyter: python3
+---
+
+Sales forecasting plays an integral role in setting expectations and making plans for your business. It’s your best shot at predicting the future. Rossmann operates over 3,000 drug stores in 7 European countries. Currently, Rossmann store managers are tasked with predicting their daily sales for up to six weeks in advance. You are provided with historical sales data for 1,115 Rossmann stores. The task is to forecast the "Sales" column for the test set. 
+
+I will be performing an exhaustive analysis in order to gain insights and engineer features with an interactive exploratory analysis and finally will use XGB to predict. 
+
+### Importing Dependencies
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:41.659655Z', iopub.status.busy: '2021-06-28T10:28:41.659287Z', iopub.status.idle: '2021-06-28T10:28:41.668384Z', shell.execute_reply: '2021-06-28T10:28:41.667451Z', shell.execute_reply.started: '2021-06-28T10:28:41.659624Z'}
+#| trusted: true
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+
+import warnings
+warnings.filterwarnings('ignore')
+
+import datetime
+import math
+import calendar
+
+# Thanks for providing this in the forum
+def ToWeight(y):
+    w = np.zeros(y.shape, dtype=float)
+    ind = y != 0
+    w[ind] = 1./(y[ind]**2)
+    return w
+
+def rmspe(yhat, y):
+    w = ToWeight(y)
+    rmspe = np.sqrt(np.mean( w * (y - yhat)**2 ))
+    return rmspe
+
+def rmspe_xg(yhat, y):
+    y = y.get_label()
+    y = np.exp(y) - 1
+    yhat = np.exp(yhat) - 1
+    w = ToWeight(y)
+    rmspe = np.sqrt(np.mean(w * (y - yhat)**2))
+    return "rmspe", rmspe
+```
+
+### Importing Data
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:41.675989Z', iopub.status.busy: '2021-06-28T10:28:41.675475Z', iopub.status.idle: '2021-06-28T10:28:42.553512Z', shell.execute_reply: '2021-06-28T10:28:42.552711Z', shell.execute_reply.started: '2021-06-28T10:28:41.675958Z'}
+#| trusted: true
+train = pd.read_csv('rossmann-store-sales/train.csv')
+test = pd.read_csv('rossmann-store-sales/test.csv')
+store = pd.read_csv('rossmann-store-sales/store.csv')
+
+train.shape, test.shape, store.shape
+```
+
+### Joining
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:42.555380Z', iopub.status.busy: '2021-06-28T10:28:42.554962Z', iopub.status.idle: '2021-06-28T10:28:42.595249Z', shell.execute_reply: '2021-06-28T10:28:42.594425Z', shell.execute_reply.started: '2021-06-28T10:28:42.555338Z'}
+#| trusted: true
+train.Store.nunique() == store.Store.nunique()
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:42.597233Z', iopub.status.busy: '2021-06-28T10:28:42.596820Z', iopub.status.idle: '2021-06-28T10:28:43.486576Z', shell.execute_reply: '2021-06-28T10:28:43.485708Z', shell.execute_reply.started: '2021-06-28T10:28:42.597192Z'}
+#| trusted: true
+df = train.merge(store, how='left', left_on=train.Store, right_on=store.Store)
+df.drop(['key_0', 'Store_y'], axis=1, inplace=True)
+df = df.rename(columns={'Store_x':'Store'})
+df.shape
+```
+
+### Understanding the Data
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:43.488214Z', iopub.status.busy: '2021-06-28T10:28:43.487938Z', iopub.status.idle: '2021-06-28T10:28:43.915969Z', shell.execute_reply: '2021-06-28T10:28:43.915005Z', shell.execute_reply.started: '2021-06-28T10:28:43.488188Z'}
+#| trusted: true
+round(df.describe().T,2)
+```
+
+There are in total 1115 stores with sales feature having 3849.93 volatility and feature customers having 464.41 volatility with a mean of 57773.82 and 633.15 respectively.
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:43.918904Z', iopub.status.busy: '2021-06-28T10:28:43.918634Z', iopub.status.idle: '2021-06-28T10:28:44.315947Z', shell.execute_reply: '2021-06-28T10:28:44.314947Z', shell.execute_reply.started: '2021-06-28T10:28:43.918880Z'}
+#| trusted: true
+train.duplicated().sum(), test.duplicated().sum()
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:44.318624Z', iopub.status.busy: '2021-06-28T10:28:44.318323Z', iopub.status.idle: '2021-06-28T10:28:44.539431Z', shell.execute_reply: '2021-06-28T10:28:44.538301Z', shell.execute_reply.started: '2021-06-28T10:28:44.318597Z'}
+#| trusted: true
+train.isnull().sum().sum(), test.isnull().sum().sum()
+```
+
+There are no duplicates and Testing dataset has 11 null values.
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:44.541466Z', iopub.status.busy: '2021-06-28T10:28:44.541035Z', iopub.status.idle: '2021-06-28T10:28:44.832546Z', shell.execute_reply: '2021-06-28T10:28:44.831477Z', shell.execute_reply.started: '2021-06-28T10:28:44.541421Z'}
+#| trusted: true
+print("Training data starts from: {}".format(train.Date.min()))
+print("Training data end on: {}".format(train.Date.max()))
+print()
+print("Testing data starts from: {}".format(test.Date.min()))
+print("Testing data end on: {}".format(test.Date.max()))
+```
+
+### Exploratory Data Analysis
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:44.834225Z', iopub.status.busy: '2021-06-28T10:28:44.833948Z', iopub.status.idle: '2021-06-28T10:28:45.340579Z', shell.execute_reply: '2021-06-28T10:28:45.339565Z', shell.execute_reply.started: '2021-06-28T10:28:44.834199Z'}
+#| trusted: true
+df.Date = pd.to_datetime(df.Date)
+df['Day'] = df.Date.dt.day
+df['Month'] = df.Date.dt.month
+df['Year'] = df.Date.dt.year
+```
+
+I wish to explore seasonality and trend in the dataset and somehow engineer and pre-process features with the analysis I perform.
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:45.342693Z', iopub.status.busy: '2021-06-28T10:28:45.342261Z', iopub.status.idle: '2021-06-28T10:28:45.778661Z', shell.execute_reply: '2021-06-28T10:28:45.777789Z', shell.execute_reply.started: '2021-06-28T10:28:45.342631Z'}
+#| trusted: true
+plt.figure(figsize=(18,8))
+plt.plot(df.groupby(df.Day).sum().Sales)
+plt.title("Sale vs Day")
+plt.xlabel('Day')
+plt.ylabel('Sales')
+plt.show()
+```
+
+Most Sales are done in the beginning of the month with end of the month being the lowest. 
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:45.780326Z', iopub.status.busy: '2021-06-28T10:28:45.780039Z', iopub.status.idle: '2021-06-28T10:28:46.125636Z', shell.execute_reply: '2021-06-28T10:28:46.124483Z', shell.execute_reply.started: '2021-06-28T10:28:45.780297Z'}
+#| trusted: true
+plt.figure(figsize=(18,8))
+plt.plot(df.groupby(df.DayOfWeek).sum().Sales)
+plt.title("Sale vs Month")
+plt.xlabel('Month')
+plt.ylabel('Sales')
+plt.show()
+```
+
+Sales are more in the beginning of the week than the end. 
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:46.127325Z', iopub.status.busy: '2021-06-28T10:28:46.127032Z', iopub.status.idle: '2021-06-28T10:28:46.454243Z', shell.execute_reply: '2021-06-28T10:28:46.453354Z', shell.execute_reply.started: '2021-06-28T10:28:46.127297Z'}
+#| trusted: true
+plt.figure(figsize=(18,8))
+plt.plot(df.groupby(df.Month).sum().Sales)
+plt.title("Sale vs Month")
+plt.xlabel('Month')
+plt.ylabel('Sales')
+plt.show()
+```
+
+Sales are relatively are lower by the end of year. 
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:46.455997Z', iopub.status.busy: '2021-06-28T10:28:46.455704Z', iopub.status.idle: '2021-06-28T10:28:51.183356Z', shell.execute_reply: '2021-06-28T10:28:51.182482Z', shell.execute_reply.started: '2021-06-28T10:28:46.455968Z'}
+#| trusted: true
+fig, (ax1, ax2) = plt.subplots(nrows=1, ncols=2, figsize=(18,8))
+sns.boxplot(train.Sales, ax=ax1)
+sns.kdeplot(train.Sales, ax=ax2)
+plt.show()
+```
+
+Sales are 0 on a huge amount of days which could mean this is either imputed to fill gaps as it doesn't make sense for sale of a day to be 0. It could mean the store was closed, maybe there was a holiday. Lets see if this stands. 
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:51.184915Z', iopub.status.busy: '2021-06-28T10:28:51.184622Z', iopub.status.idle: '2021-06-28T10:28:51.221345Z', shell.execute_reply: '2021-06-28T10:28:51.220654Z', shell.execute_reply.started: '2021-06-28T10:28:51.184889Z'}
+#| trusted: true
+df[df.Open==0].Sales.value_counts()
+```
+
+Seems like I was right! 172817 values are filled with 0. I will fill these values with np.NaN as some models like XGBoost can handle missing values and it might benifit from it. 
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:51.222980Z', iopub.status.busy: '2021-06-28T10:28:51.222460Z', iopub.status.idle: '2021-06-28T10:28:52.487185Z', shell.execute_reply: '2021-06-28T10:28:52.486496Z', shell.execute_reply.started: '2021-06-28T10:28:51.222935Z'}
+#| trusted: true
+fig, (ax1, ax2) = plt.subplots(nrows=1, ncols=2, figsize=(18,8))
+cmap = sns.diverging_palette(230, 20, as_cmap=True)
+corr = train.corr()
+mask = np.triu(np.ones_like(corr, dtype=bool))
+sns.heatmap(train.corr(), mask=mask, cmap=cmap, annot=True, ax=ax1)
+ax1.set_title('Train')
+corr = test.corr()
+mask = np.triu(np.ones_like(corr, dtype=bool))
+sns.heatmap(test.corr(), mask=mask, cmap=cmap, annot=True, ax=ax2)
+ax2.set_title('Test')
+plt.show()
+```
+
+Sales are highly correlated with feature Customers and feature Open and moderately correlated with Promo. Lets see some more plots about this!
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:52.488730Z', iopub.status.busy: '2021-06-28T10:28:52.488419Z', iopub.status.idle: '2021-06-28T10:28:56.138510Z', shell.execute_reply: '2021-06-28T10:28:56.137661Z', shell.execute_reply.started: '2021-06-28T10:28:52.488705Z'}
+#| trusted: true
+plt.figure(figsize=(18,8))
+temp_df = df.sample(100000)
+sns.scatterplot(data = temp_df, x = 'Sales', y = 'Customers', hue='Year')
+plt.title("Sales Vs Customers")
+plt.show()
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:56.140230Z', iopub.status.busy: '2021-06-28T10:28:56.139722Z', iopub.status.idle: '2021-06-28T10:28:56.564065Z', shell.execute_reply: '2021-06-28T10:28:56.563295Z', shell.execute_reply.started: '2021-06-28T10:28:56.140184Z'}
+#| trusted: true
+plt.figure(figsize=(18,8))
+temp_df = df.groupby(df.Year).sum()
+sns.barplot(data = temp_df, x = temp_df.index , y = 'Sales', palette='Blues')
+plt.title("Total SALE in Each Year")
+plt.xlabel('Year')
+plt.ylabel('Sales')
+plt.show()
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:28:56.565652Z', iopub.status.busy: '2021-06-28T10:28:56.565185Z', iopub.status.idle: '2021-06-28T10:29:04.076940Z', shell.execute_reply: '2021-06-28T10:29:04.075727Z', shell.execute_reply.started: '2021-06-28T10:28:56.565607Z'}
+#| trusted: true
+fig, (ax1, ax2) = plt.subplots(nrows=1, ncols=2, figsize=(18,8))
+temp_df = df.sample(100000)
+sns.scatterplot(data = temp_df, x = 'Sales', y = 'Customers', hue='Promo', ax=ax1)
+sns.scatterplot(data = temp_df, x = 'Sales', y = 'Customers', hue='Promo2', ax=ax2)
+plt.show()
+```
+
+Seems like Promo1 was more successful for the stores! Lets check the Sales for each promo on average. 
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:04.078907Z', iopub.status.busy: '2021-06-28T10:29:04.078552Z', iopub.status.idle: '2021-06-28T10:29:04.122135Z', shell.execute_reply: '2021-06-28T10:29:04.121221Z', shell.execute_reply.started: '2021-06-28T10:29:04.078875Z'}
+#| trusted: true
+df.groupby(df.Promo).Sales.mean()[1] > df.groupby(df.Promo2).Sales.mean()[1] #1 means store participated
+```
+
+Lets see if the type of store is a significant feature! Intuitively, stores inventory and ambience should be a huge factor. 
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:04.123962Z', iopub.status.busy: '2021-06-28T10:29:04.123653Z', iopub.status.idle: '2021-06-28T10:29:04.524977Z', shell.execute_reply: '2021-06-28T10:29:04.524062Z', shell.execute_reply.started: '2021-06-28T10:29:04.123933Z'}
+#| trusted: true
+plt.figure(figsize=(18,8))
+temp_df = df.groupby(df.StoreType).sum()
+sns.barplot(data = temp_df, x = temp_df.index, y = 'Sales', palette='Blues')
+plt.title("Store Type vs Sales")
+plt.xlabel('Store Type')
+plt.ylabel('Sales')
+plt.show()
+```
+
+Why does Store A outperform all other stores?
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:04.526851Z', iopub.status.busy: '2021-06-28T10:29:04.526523Z', iopub.status.idle: '2021-06-28T10:29:05.485518Z', shell.execute_reply: '2021-06-28T10:29:05.484487Z', shell.execute_reply.started: '2021-06-28T10:29:04.526821Z'}
+#| trusted: true
+fig, (ax1, ax2) = plt.subplots(nrows=1, ncols=2, figsize=(18,8))
+temp_df = df.groupby(df.StoreType).count()
+sns.barplot(data = temp_df, x = temp_df.index, y = 'Promo', ax=ax1, palette='Blues')
+temp_df = df.groupby(df.StoreType).mean()
+sns.barplot(data = temp_df, x = temp_df.index, y = 'CompetitionDistance', ax=ax2, palette='Blues')
+plt.show()
+```
+
+Store A did the most Promo'1's inspite of being on average top second in comparison to other stores with regard to Competition Distance (distance in meters to the nearest competitor store). Hence, I think it is fair to say promos are a big deal. Other factors could be seasonality, trend etc. Lets see about trend!
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:05.487270Z', iopub.status.busy: '2021-06-28T10:29:05.486965Z', iopub.status.idle: '2021-06-28T10:29:06.920331Z', shell.execute_reply: '2021-06-28T10:29:06.919250Z', shell.execute_reply.started: '2021-06-28T10:29:05.487243Z'}
+#| trusted: true
+from statsmodels.tsa.seasonal import seasonal_decompose
+temp_df = train.copy()
+temp_df.Date = pd.to_datetime(temp_df.Date)
+temp_df.index = temp_df.Date
+temp_df.Sales = temp_df.Sales.apply(lambda x: None if x == 0 else x)
+temp_df.Sales = temp_df.Sales.fillna(method='ffill').fillna(method='bfill')
+temp_df = temp_df[['Sales']]
+temp_df = temp_df.groupby(temp_df.index).sum()
+result = seasonal_decompose(temp_df, model='additive', period=52)
+
+fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(18,8))
+ax1.plot(result.trend)
+ax1.axhline(y = temp_df.Sales.mean(), color = 'r', linestyle = '-', label='Sales Mean')
+ax1.set_title("Trend")
+ax2.plot(result.resid)
+ax2.set_title("Error")
+ax1.legend()
+plt.show()
+```
+
+2015 has been a good year as the trend line is above the average line by the end of 2014. Beginning of 2014 is a huge peak, I wonder what drived that?
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:06.921892Z', iopub.status.busy: '2021-06-28T10:29:06.921555Z', iopub.status.idle: '2021-06-28T10:29:08.070979Z', shell.execute_reply: '2021-06-28T10:29:08.069824Z', shell.execute_reply.started: '2021-06-28T10:29:06.921863Z'}
+#| trusted: true
+temp_df = df.copy()
+temp_df.index = temp_df.Date
+temp_df.Sales = temp_df.Sales.apply(lambda x: None if x == 0 else x)
+temp_df.Sales = temp_df.Sales.fillna(method='ffill').fillna(method='bfill')
+temp_df = temp_df.groupby(temp_df.index).mean()
+
+fig, (ax1, ax2) = plt.subplots(nrows=1, ncols=2, figsize=(18,8))
+ax1.plot(temp_df.CompetitionDistance, '.')
+ax1.set_title("Date vs CompetitonDistance (on average)")
+ax2.plot(temp_df.CompetitionOpenSinceMonth, '.')
+ax2.set_title("Date vs CompetitionOpenSinceMonth (on average)")
+plt.show()
+```
+
+Seems like there was a new competitor near the end of 2014 and since the distance also relatively increased it could be maybe change of location but these are just assumptions. It could be useful for the model to interpret such behaviour in the future for the stores. 
+
+I wonder if the stores had done less promos when the trend was going down. Lets see!
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:08.072748Z', iopub.status.busy: '2021-06-28T10:29:08.072397Z', iopub.status.idle: '2021-06-28T10:29:08.514045Z', shell.execute_reply: '2021-06-28T10:29:08.512830Z', shell.execute_reply.started: '2021-06-28T10:29:08.072718Z'}
+#| trusted: true
+plt.figure(figsize=(18,8))
+temp_df = df.copy()
+temp_df.index = temp_df.Date
+temp_df = temp_df[temp_df.Year==2014]
+temp_df = temp_df.groupby(temp_df.Month).sum()
+temp_df.Sales = temp_df.Sales.apply(lambda x: None if x == 0 else x)
+temp_df.Sales = temp_df.Sales.fillna(method='ffill').fillna(method='bfill')
+
+plt.title('Total Promos done in YEAR 2014')
+sns.lineplot(data = temp_df, x = temp_df.index, y = 'Promo', palette='Blues', label='Promo1')
+sns.lineplot(data = temp_df, x = temp_df.index, y = 'Promo2', palette='Blues', label='Promo2')
+plt.legend()
+plt.show()
+```
+
+### Feature Engineering and Preprocessing
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:08.516231Z', iopub.status.busy: '2021-06-28T10:29:08.515821Z', iopub.status.idle: '2021-06-28T10:29:08.521413Z', shell.execute_reply: '2021-06-28T10:29:08.520142Z', shell.execute_reply.started: '2021-06-28T10:29:08.516185Z'}
+#| trusted: true
+features_x = ['Store', 'Date', 'DayOfWeek', 'Open', 'Promo', 'SchoolHoliday', 'StateHoliday']
+features_y = ['SalesLog']
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:08.523289Z', iopub.status.busy: '2021-06-28T10:29:08.522943Z', iopub.status.idle: '2021-06-28T10:29:08.677150Z', shell.execute_reply: '2021-06-28T10:29:08.675810Z', shell.execute_reply.started: '2021-06-28T10:29:08.523261Z'}
+#| trusted: true
+train['is_train'] = 1
+test['is_train'] = 0
+df = pd.concat([train, test])
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:08.679110Z', iopub.status.busy: '2021-06-28T10:29:08.678766Z', iopub.status.idle: '2021-06-28T10:29:08.871151Z', shell.execute_reply: '2021-06-28T10:29:08.870124Z', shell.execute_reply.started: '2021-06-28T10:29:08.679076Z'}
+#| trusted: true
+df.Date = pd.to_datetime(df.Date) #Converting date to required format
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:08.873214Z', iopub.status.busy: '2021-06-28T10:29:08.872786Z', iopub.status.idle: '2021-06-28T10:29:08.994601Z', shell.execute_reply: '2021-06-28T10:29:08.993487Z', shell.execute_reply.started: '2021-06-28T10:29:08.873172Z'}
+#| trusted: true
+df = df.loc[~((df['Open'] == 1) & (df['Sales'] == 0))] #Removing rows with Sales 0
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:08.997107Z', iopub.status.busy: '2021-06-28T10:29:08.996673Z', iopub.status.idle: '2021-06-28T10:29:09.519177Z', shell.execute_reply: '2021-06-28T10:29:09.518036Z', shell.execute_reply.started: '2021-06-28T10:29:08.997063Z'}
+#| trusted: true
+df.StateHoliday = df.StateHoliday.map({0:'0', 'a':'a', 'b':'b', 'c':'c', '0':'0'}) #mixed data types
+df.StateHoliday = LabelEncoder().fit_transform(df.StateHoliday) #Encoding for XG Boost
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:09.520850Z', iopub.status.busy: '2021-06-28T10:29:09.520537Z', iopub.status.idle: '2021-06-28T10:29:10.052186Z', shell.execute_reply: '2021-06-28T10:29:10.050543Z', shell.execute_reply.started: '2021-06-28T10:29:09.520821Z'}
+#| trusted: true
+var_name = 'Date'
+
+df[var_name + 'Day'] = df[var_name].dt.day #addding day
+df[var_name + 'Week'] = df[var_name].dt.week #adding week
+df[var_name + 'Month'] = df[var_name].dt.month #adding month
+df[var_name + 'Year'] = df[var_name].dt.year #adding year
+df[var_name + 'DayOfYear'] = df[var_name].dt.dayofyear #adding dayofyear
+
+features_x.remove(var_name) #removing Date
+features_x.append(var_name + 'Day')
+features_x.append(var_name + 'Week')
+features_x.append(var_name + 'Month')
+features_x.append(var_name + 'Year')
+features_x.append(var_name + 'DayOfYear')
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:10.055155Z', iopub.status.busy: '2021-06-28T10:29:10.054696Z', iopub.status.idle: '2021-06-28T10:29:10.064355Z', shell.execute_reply: '2021-06-28T10:29:10.063147Z', shell.execute_reply.started: '2021-06-28T10:29:10.055101Z'}
+#| trusted: true
+store.StoreType = LabelEncoder().fit_transform(store.StoreType) #encoding StoreType
+store.Assortment = LabelEncoder().fit_transform(store.Assortment) #encoding Assortment
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:10.066285Z', iopub.status.busy: '2021-06-28T10:29:10.065943Z', iopub.status.idle: '2021-06-28T10:29:10.337059Z', shell.execute_reply: '2021-06-28T10:29:10.336091Z', shell.execute_reply.started: '2021-06-28T10:29:10.066253Z'}
+#| trusted: true
+join_with = store['PromoInterval'].str.split(',').apply(pd.Series)
+join_with.columns = join_with.columns.map(lambda x: str(x) + '_PromoInterval')
+store = store.join(join_with) #joining splits
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:10.344492Z', iopub.status.busy: '2021-06-28T10:29:10.344098Z', iopub.status.idle: '2021-06-28T10:29:10.475918Z', shell.execute_reply: '2021-06-28T10:29:10.474806Z', shell.execute_reply.started: '2021-06-28T10:29:10.344455Z'}
+#| trusted: true
+def monthToNum(value):
+    if(value=='Sept'):
+        value='Sep'
+    return list(calendar.month_abbr).index(value)
+#mapping month abbr to month number
+store['0_PromoInterval'] = store['0_PromoInterval'].map(lambda x: monthToNum(x) if str(x) != 'nan' else np.nan)
+store['1_PromoInterval'] = store['1_PromoInterval'].map(lambda x: monthToNum(x) if str(x) != 'nan' else np.nan)
+store['2_PromoInterval'] = store['2_PromoInterval'].map(lambda x: monthToNum(x) if str(x) != 'nan' else np.nan)
+store['3_PromoInterval'] = store['3_PromoInterval'].map(lambda x: monthToNum(x) if str(x) != 'nan' else np.nan)
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:10.478042Z', iopub.status.busy: '2021-06-28T10:29:10.477704Z', iopub.status.idle: '2021-06-28T10:29:10.679383Z', shell.execute_reply: '2021-06-28T10:29:10.678373Z', shell.execute_reply.started: '2021-06-28T10:29:10.478002Z'}
+#| trusted: true
+competition_open = []
+for index, value in store[['CompetitionOpenSinceMonth', 'CompetitionOpenSinceYear']].iterrows():
+    try:
+        year, month = int(value['CompetitionOpenSinceYear']), int(value['CompetitionOpenSinceMonth'])
+        date = pd.to_datetime("{}-{}-01".format(year, month), format='%Y-%m')
+        competition_open.append(date)
+    except:
+        competition_open.append(np.nan)
+competition_open = pd.Series(competition_open)
+competition_open.shape
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:10.681025Z', iopub.status.busy: '2021-06-28T10:29:10.680723Z', iopub.status.idle: '2021-06-28T10:29:10.694647Z', shell.execute_reply: '2021-06-28T10:29:10.693306Z', shell.execute_reply.started: '2021-06-28T10:29:10.680994Z'}
+#| trusted: true
+store['CompetitionOpen'] = competition_open #converted int to datetime
+store['CompetitionOpen'] = store.CompetitionOpen.dt.strftime('%Y%m%d')
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:10.696395Z', iopub.status.busy: '2021-06-28T10:29:10.696079Z', iopub.status.idle: '2021-06-28T10:29:10.825896Z', shell.execute_reply: '2021-06-28T10:29:10.824811Z', shell.execute_reply.started: '2021-06-28T10:29:10.696363Z'}
+#| trusted: true
+promo = []
+for index, value in store[['Promo2SinceWeek', 'Promo2SinceYear']].iterrows():
+    try:
+        year, week = int(value['Promo2SinceYear']), int(value['Promo2SinceWeek'])
+        date = pd.to_datetime("{}-{}-01".format(year, week), format='%Y%W')
+        promo.append(date)
+    except:
+        promo.append(np.nan)
+promo = pd.to_datetime(pd.Series(competition_open))
+promo.shape
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:10.827530Z', iopub.status.busy: '2021-06-28T10:29:10.827215Z', iopub.status.idle: '2021-06-28T10:29:10.842757Z', shell.execute_reply: '2021-06-28T10:29:10.841569Z', shell.execute_reply.started: '2021-06-28T10:29:10.827499Z'}
+#| trusted: true
+store['PromoSince'] = promo #converted int to datetime
+store['PromoSince'] = store.PromoSince.dt.strftime('%Y%m%d')
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:10.844469Z', iopub.status.busy: '2021-06-28T10:29:10.844165Z', iopub.status.idle: '2021-06-28T10:29:10.849776Z', shell.execute_reply: '2021-06-28T10:29:10.848567Z', shell.execute_reply.started: '2021-06-28T10:29:10.844441Z'}
+#| trusted: true
+store_features = ['Store', 'StoreType', 'Assortment', 'CompetitionDistance', 'CompetitionOpen', 
+                  'PromoSince', '0_PromoInterval']
+#1_PromoInterval, 2_PromoInterval, 3_PromoInterval irrelevent
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:10.851654Z', iopub.status.busy: '2021-06-28T10:29:10.851315Z', iopub.status.idle: '2021-06-28T10:29:11.245360Z', shell.execute_reply: '2021-06-28T10:29:11.244272Z', shell.execute_reply.started: '2021-06-28T10:29:10.851614Z'}
+#| trusted: true
+df = pd.merge(df, store[store_features], how='left', on=['Store'])
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:11.246981Z', iopub.status.busy: '2021-06-28T10:29:11.246688Z', iopub.status.idle: '2021-06-28T10:29:11.251893Z', shell.execute_reply: '2021-06-28T10:29:11.250741Z', shell.execute_reply.started: '2021-06-28T10:29:11.246953Z'}
+#| trusted: true
+features_x = list(set(features_x + store_features))
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:11.254150Z', iopub.status.busy: '2021-06-28T10:29:11.253697Z', iopub.status.idle: '2021-06-28T10:29:11.570573Z', shell.execute_reply: '2021-06-28T10:29:11.569488Z', shell.execute_reply.started: '2021-06-28T10:29:11.254104Z'}
+#| trusted: true
+for feature in features_x:
+    df[feature] = df[feature].fillna(-999) #out of range value for model
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:11.572619Z', iopub.status.busy: '2021-06-28T10:29:11.572190Z', iopub.status.idle: '2021-06-28T10:29:21.452933Z', shell.execute_reply: '2021-06-28T10:29:21.451479Z', shell.execute_reply.started: '2021-06-28T10:29:11.572553Z'}
+#| trusted: true
+df['DateInt'] = df.Date.dt.strftime('%Y%m%d').map(int) #mapping to Int
+df['CompetitionOpen'] = df.CompetitionOpen.map(int)
+df['PromoSince'] = df.PromoSince.map(int)
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:21.454614Z', iopub.status.busy: '2021-06-28T10:29:21.454267Z', iopub.status.idle: '2021-06-28T10:29:21.473351Z', shell.execute_reply: '2021-06-28T10:29:21.472339Z', shell.execute_reply.started: '2021-06-28T10:29:21.454567Z'}
+#| trusted: true
+df['Zscore'] = (df.Sales - df.Sales.mean())/df.Sales.std()
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:21.475050Z', iopub.status.busy: '2021-06-28T10:29:21.474626Z', iopub.status.idle: '2021-06-28T10:29:21.858211Z', shell.execute_reply: '2021-06-28T10:29:21.856956Z', shell.execute_reply.started: '2021-06-28T10:29:21.475007Z'}
+#| trusted: true
+thresh=4.0
+def check_outlier(value):
+    if(value>=thresh):
+        return True
+    else:
+        return False
+
+df['Outlier'] = df.Zscore.apply(check_outlier)
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:21.859836Z', iopub.status.busy: '2021-06-28T10:29:21.859533Z', iopub.status.idle: '2021-06-28T10:29:21.938849Z', shell.execute_reply: '2021-06-28T10:29:21.937707Z', shell.execute_reply.started: '2021-06-28T10:29:21.859808Z'}
+#| trusted: true
+store_data_sales = df.groupby([df['Store']])['Sales'].sum()
+store_data_customers = df.groupby([df['Store']])['Customers'].sum()
+store_data_open = df.groupby([df['Store']])['Open'].count()
+
+store_data_sales_per_day = store_data_sales / store_data_open
+store_data_customers_per_day = store_data_customers / store_data_open
+store_data_sales_per_customer_per_day = store_data_sales_per_day / store_data_customers_per_day
+
+df_store = pd.merge(store, store_data_sales_per_day.reset_index(name='SalesPerDay'), how='left', on=['Store'])
+df_store = pd.merge(df_store, store_data_customers_per_day.reset_index(name='CustomersPerDay'), how='left', on=['Store'])
+df_store = pd.merge(df_store, store_data_sales_per_customer_per_day.reset_index(name='SalesPerCustomersPerDay'), how='left', on=['Store'])
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:21.940544Z', iopub.status.busy: '2021-06-28T10:29:21.940242Z', iopub.status.idle: '2021-06-28T10:29:22.238412Z', shell.execute_reply: '2021-06-28T10:29:22.237295Z', shell.execute_reply.started: '2021-06-28T10:29:21.940516Z'}
+#| trusted: true
+store_features = ['Store', 'SalesPerDay', 'CustomersPerDay', 'SalesPerCustomersPerDay']
+
+features_x = list(set(features_x + store_features))
+df = pd.merge(df, df_store[store_features], how='left', on=['Store'])
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:22.240126Z', iopub.status.busy: '2021-06-28T10:29:22.239806Z', iopub.status.idle: '2021-06-28T10:29:23.242818Z', shell.execute_reply: '2021-06-28T10:29:23.241710Z', shell.execute_reply.started: '2021-06-28T10:29:22.240098Z'}
+#| trusted: true
+holidays_each_day_of_week = df.groupby(df.DayOfWeek).sum().StateHoliday
+df = pd.merge(df, holidays_each_day_of_week.reset_index(name='HolidaysPerDayOfWeek'), on=['DayOfWeek'])
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:23.244766Z', iopub.status.busy: '2021-06-28T10:29:23.244444Z', iopub.status.idle: '2021-06-28T10:29:24.459908Z', shell.execute_reply: '2021-06-28T10:29:24.459009Z', shell.execute_reply.started: '2021-06-28T10:29:23.244737Z'}
+#| trusted: true
+school_holidays_each_day_of_week = df.groupby(df.DayOfWeek).sum().SchoolHoliday
+df = pd.merge(df, school_holidays_each_day_of_week.reset_index(name='SchoolHolidaysPerDayOfWeek'), on=['DayOfWeek'])
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:24.461516Z', iopub.status.busy: '2021-06-28T10:29:24.461199Z', iopub.status.idle: '2021-06-28T10:29:25.673476Z', shell.execute_reply: '2021-06-28T10:29:25.672118Z', shell.execute_reply.started: '2021-06-28T10:29:24.461485Z'}
+#| trusted: true
+promo_each_day_of_week = df.groupby(df.DayOfWeek).sum().Promo
+df = pd.merge(df, promo_each_day_of_week.reset_index(name='PromoPerDayOfWeek'), on=['DayOfWeek'])
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:29:25.675333Z', iopub.status.busy: '2021-06-28T10:29:25.674931Z', iopub.status.idle: '2021-06-28T10:37:32.599331Z', shell.execute_reply: '2021-06-28T10:37:32.598228Z', shell.execute_reply.started: '2021-06-28T10:29:25.675298Z'}
+#| trusted: true
+holidays_next_week=[]
+holidays_next_week_index=[]
+for index, value in df.groupby(df.Date).sum().iterrows():
+    start_range = index + datetime.timedelta(days=7)
+    end_range = index + datetime.timedelta(days=15)
+    school_holidays = sum((df.groupby(df.Date).sum()[start_range:end_range]).SchoolHoliday)
+    state_holidays = sum((df.groupby(df.Date).sum()[start_range:end_range]).StateHoliday)
+    holidays_next_week.append(school_holidays+state_holidays)
+    holidays_next_week_index.append(index)
+    
+holidays_next_week = pd.Series(holidays_next_week)
+holidays_next_week.shape
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:37:32.601687Z', iopub.status.busy: '2021-06-28T10:37:32.600998Z', iopub.status.idle: '2021-06-28T10:45:14.888439Z', shell.execute_reply: '2021-06-28T10:45:14.887422Z', shell.execute_reply.started: '2021-06-28T10:37:32.601637Z'}
+#| trusted: true
+holidays_this_week=[]
+index_list = []
+for index, value in df.groupby(df.Date).sum().iterrows():
+    start_range = index 
+    end_range = index + datetime.timedelta(days=7)
+    school_holidays = sum((df.groupby(df.Date).sum()[start_range:end_range]).SchoolHoliday)
+    state_holidays = sum((df.groupby(df.Date).sum()[start_range:end_range]).StateHoliday)
+    holidays_this_week.append(school_holidays+state_holidays)
+    index_list.append(index)
+    
+holidays_this_week = pd.Series(holidays_this_week)
+holidays_this_week.shape
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:45:14.890298Z', iopub.status.busy: '2021-06-28T10:45:14.889946Z', iopub.status.idle: '2021-06-28T10:52:58.555495Z', shell.execute_reply: '2021-06-28T10:52:58.554770Z', shell.execute_reply.started: '2021-06-28T10:45:14.890268Z'}
+#| trusted: true
+holidays_last_week=[]
+holidays_last_week_index=[]
+for index, value in df.groupby(df.Date).sum().iterrows():
+    start_range = index - datetime.timedelta(days=7)
+    end_range = index + datetime.timedelta(days=1)
+    school_holidays = sum((df.groupby(df.Date).sum()[start_range:end_range]).SchoolHoliday)
+    state_holidays = sum((df.groupby(df.Date).sum()[start_range:end_range]).StateHoliday)
+    holidays_last_week.append(school_holidays+state_holidays)
+    holidays_last_week_index.append(index)
+    
+holidays_last_week = pd.Series(holidays_next_week)
+holidays_last_week.shape
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:52:58.557208Z', iopub.status.busy: '2021-06-28T10:52:58.556728Z', iopub.status.idle: '2021-06-28T10:52:59.364882Z', shell.execute_reply: '2021-06-28T10:52:59.364041Z', shell.execute_reply.started: '2021-06-28T10:52:58.557177Z'}
+#| trusted: true
+temp_df = pd.DataFrame({'HolidaysNextWeek':holidays_next_week, 'Date': holidays_next_week_index})
+df = pd.merge(df, temp_df, on=['Date'])
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:52:59.366659Z', iopub.status.busy: '2021-06-28T10:52:59.366151Z', iopub.status.idle: '2021-06-28T10:52:59.602308Z', shell.execute_reply: '2021-06-28T10:52:59.601507Z', shell.execute_reply.started: '2021-06-28T10:52:59.366625Z'}
+#| trusted: true
+temp_df = pd.DataFrame({'HolidaysThisWeek':holidays_this_week, 'Date': index_list})
+df = pd.merge(df, temp_df, on=['Date'])
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:52:59.604045Z', iopub.status.busy: '2021-06-28T10:52:59.603538Z', iopub.status.idle: '2021-06-28T10:52:59.803846Z', shell.execute_reply: '2021-06-28T10:52:59.803049Z', shell.execute_reply.started: '2021-06-28T10:52:59.604003Z'}
+#| trusted: true
+temp_df = pd.DataFrame({'HolidaysLastWeek':holidays_last_week, 'Date': holidays_last_week_index})
+df = pd.merge(df, temp_df, on=['Date'])
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:52:59.805519Z', iopub.status.busy: '2021-06-28T10:52:59.805052Z', iopub.status.idle: '2021-06-28T10:52:59.809749Z', shell.execute_reply: '2021-06-28T10:52:59.808627Z', shell.execute_reply.started: '2021-06-28T10:52:59.805488Z'}
+#| trusted: true
+holidays_features = ['HolidaysPerDayOfWeek', 'SchoolHolidaysPerDayOfWeek', 'PromoPerDayOfWeek', 
+                     'HolidaysNextWeek', 'HolidaysThisWeek', 'HolidaysLastWeek']
+
+features_x = list(set(features_x + holidays_features))
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:52:59.811648Z', iopub.status.busy: '2021-06-28T10:52:59.811217Z', iopub.status.idle: '2021-06-28T10:53:00.378092Z', shell.execute_reply: '2021-06-28T10:53:00.376988Z', shell.execute_reply.started: '2021-06-28T10:52:59.811580Z'}
+#| trusted: true
+#Most Promos are done on DayofWeek 4
+df['DaysTillMaxPromo'] = df.DayOfWeek.apply(lambda x: 4-x)
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:53:00.380256Z', iopub.status.busy: '2021-06-28T10:53:00.379813Z', iopub.status.idle: '2021-06-28T10:53:00.398767Z', shell.execute_reply: '2021-06-28T10:53:00.397836Z', shell.execute_reply.started: '2021-06-28T10:53:00.380212Z'}
+#| trusted: true
+df['PromoTomorrow'] = df.Promo.shift(-1)
+df['PromoYesterday'] = df.Promo.shift(1)
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:53:00.400363Z', iopub.status.busy: '2021-06-28T10:53:00.400077Z', iopub.status.idle: '2021-06-28T10:53:00.404720Z', shell.execute_reply: '2021-06-28T10:53:00.403694Z', shell.execute_reply.started: '2021-06-28T10:53:00.400335Z'}
+#| trusted: true
+promo_features = ['DaysTillMaxPromo', 'PromoTomorrow', 'PromoYesterday']
+
+features_x = list(set(features_x + promo_features))
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:53:00.406291Z', iopub.status.busy: '2021-06-28T10:53:00.405967Z', iopub.status.idle: '2021-06-28T10:53:00.887891Z', shell.execute_reply: '2021-06-28T10:53:00.887041Z', shell.execute_reply.started: '2021-06-28T10:53:00.406262Z'}
+#| trusted: true
+df.Sales = df.Sales.apply(lambda x: np.nan if x == 0 else x) #Convert 0 to NaNs
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:53:00.889455Z', iopub.status.busy: '2021-06-28T10:53:00.889150Z', iopub.status.idle: '2021-06-28T10:53:01.279111Z', shell.execute_reply: '2021-06-28T10:53:01.278081Z', shell.execute_reply.started: '2021-06-28T10:53:00.889426Z'}
+#| trusted: true
+df.loc[df['is_train'] == 1, 'SalesLog'] = np.log(1+df.loc[df['is_train'] == 1]['Sales']) #Transforming Sales to 1+log
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:53:01.280547Z', iopub.status.busy: '2021-06-28T10:53:01.280279Z', iopub.status.idle: '2021-06-28T10:53:01.285892Z', shell.execute_reply: '2021-06-28T10:53:01.284965Z', shell.execute_reply.started: '2021-06-28T10:53:01.280521Z'}
+#| trusted: true
+len(features_x)
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:53:01.287413Z', iopub.status.busy: '2021-06-28T10:53:01.287125Z', iopub.status.idle: '2021-06-28T10:53:01.297868Z', shell.execute_reply: '2021-06-28T10:53:01.296866Z', shell.execute_reply.started: '2021-06-28T10:53:01.287386Z'}
+#| trusted: true
+df.shape
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:53:01.299416Z', iopub.status.busy: '2021-06-28T10:53:01.298989Z', iopub.status.idle: '2021-06-28T10:53:01.375668Z', shell.execute_reply: '2021-06-28T10:53:01.374507Z', shell.execute_reply.started: '2021-06-28T10:53:01.299383Z'}
+#| trusted: true
+df.isnull().sum().sum()
+```
+
+# Modelling
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T10:53:01.377162Z', iopub.status.busy: '2021-06-28T10:53:01.376875Z', iopub.status.idle: '2021-06-28T10:53:01.665803Z', shell.execute_reply: '2021-06-28T10:53:01.664695Z', shell.execute_reply.started: '2021-06-28T10:53:01.377134Z'}
+#| trusted: true
+import xgboost as xgb
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T11:04:45.085164Z', iopub.status.busy: '2021-06-28T11:04:45.084800Z', iopub.status.idle: '2021-06-28T15:48:36.824286Z', shell.execute_reply: '2021-06-28T15:48:36.823160Z', shell.execute_reply.started: '2021-06-28T11:04:45.085134Z'}
+#| trusted: true
+data = df.loc[(df['is_train'] == 1) & (df['Open'] == 1) & (df['Outlier'] == False)]
+x_train, x_test, y_train, y_test = train_test_split(data[features_x], 
+                                                    data[features_y], 
+                                                    test_size=0.1, 
+                                                    random_state=42)
+print(x_train.shape, y_train.shape, x_test.shape, y_test.shape)
+
+dtrain = xgb.DMatrix(x_train, y_train)
+dtest = xgb.DMatrix(x_test, y_test)
+
+num_round = 20000
+evallist = [(dtrain, 'train'), (dtest, 'test')]
+
+param = {'max_depth': 9,
+         'eta': 0.01,
+         'subsample': 0.75,
+         'colsample_bytree': 0.6, 
+         'objective': 'reg:squarederror',}
+
+plst = list(param.items())
+
+model = xgb.train(plst, dtrain, num_round, evallist, 
+                  feval=rmspe_xg, verbose_eval=250, early_stopping_rounds=250)
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T16:02:48.398991Z', iopub.status.busy: '2021-06-28T16:02:48.398503Z', iopub.status.idle: '2021-06-28T16:04:25.213487Z', shell.execute_reply: '2021-06-28T16:04:25.212495Z', shell.execute_reply.started: '2021-06-28T16:02:48.398948Z'}
+#| trusted: true
+#Print Feature Importance
+plt.figure(figsize=(18,8))
+from xgboost import plot_importance
+plot_importance(model)
+plt.show()
+```
+
+```{python}
+#| execution: {iopub.execute_input: '2021-06-28T16:05:37.622857Z', iopub.status.busy: '2021-06-28T16:05:37.622422Z', iopub.status.idle: '2021-06-28T16:06:00.425933Z', shell.execute_reply: '2021-06-28T16:06:00.424719Z', shell.execute_reply.started: '2021-06-28T16:05:37.622825Z'}
+#| trusted: true
+submit = df.loc[df['is_train'] == 0]
+dsubmit = xgb.DMatrix(submit[features_x])
+predictions = model.predict(dsubmit)
+
+df_predictions = submit['Id'].reset_index()
+df_predictions['Id'] = df_predictions['Id'].astype('int')
+df_predictions['Sales'] = (np.exp(predictions) - 1) * 0.985 #Scale Back
+
+df_predictions.sort_values('Id', inplace=True)
+df_predictions[['Id', 'Sales']].to_csv('solution.csv', index=False)
+```
+
